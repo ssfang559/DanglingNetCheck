@@ -1,0 +1,39 @@
+//#DEFINE ENABLE_VIRTUAL_CONNECTION // Turn on this switch if your layout still has opens or shorts on Power or Ground net
+//#DEFINE ENABLE_LAYOUT_TEXT_FILE   // Turn on this switch if you want to use "LAYOUT TEXT" to specify port location 
+                                    // and put those text infomations into the file "layout.text"
+//#DEFINE ENABLE_TOP_ONLY           // Turn on this switch if you only want to check the nets or devices at top cell
+//#DEFINE ENABLE_PORTS              // Turn on this switch if you want to verify the port nets
+//#DEFINE ENABLE_SKIP_CELLS         // Turn on this switch if you want to skip some cells for check
+//#DEFINE LVS_NOT_ABORT
+
+LAYOUT PATH ""
+LAYOUT PRIMARY ""
+LAYOUT SYSTEM GDSII
+
+SOURCE PATH ""
+SOURCE PRIMARY ""
+SOURCE SYSTEM SPICE
+
+PERC NETLIST LAYOUT
+PERC REPORT "perc.rep"
+PERC REPORT MAXIMUM ALL
+MASK SVDB DIRECTORY "svdb" QUERY
+
+INCLUDE "__LVS_DECK__"
+
+#IFDEF ENABLE_LAYOUT_TEXT_FILE
+  LAYOUT TEXT FILE "layout.text"
+#ENDIF
+
+#IFDEF ENABLE_VIRTUAL_CONNECTION
+  VIRTUAL CONNECT COLON YES
+  VIRTUAL CONNECT NAME ?
+#ENDIF
+
+#IFDEF ENABLE_SKIP_CELLS
+  VARIABLE SKIP_CELLS
+  EXCLUDE CELL SKIP_CELLS
+  LVS SPICE EXCLUDE CELLS SOURCE SKIP_CELLS
+#ENDIF
+
+INCLUDE "/home/cad1/ssfang/DanglingNetCheck/main/calibrePERC.rule"
