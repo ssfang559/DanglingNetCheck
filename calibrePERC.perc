@@ -1,0 +1,441 @@
+#IFDEF ENABLE_TOP_ONLY
+  VARIABLE ENABLE_TOP_ONLY 1
+#ELSE
+  VARIABLE ENABLE_TOP_ONLY 0
+#ENDIF
+
+#IFDEF ENABLE_PORTS
+  VARIABLE ENABLE_PORTS 1
+#ELSE
+  VARIABLE ENABLE_PORTS 0
+#ENDIF
+
+PERC LOAD topo INIT init SELECT export
+
+TVF FUNCTION topo [/*
+
+  package require CalibreLVS_PERC
+
+  proc init {} {
+
+    perc::define_net_type Power { lvsPower } -cell
+    perc::define_net_type Ground { lvsGround } -cell
+    perc::define_net_type TopPorts { lvsTopPorts } -cell
+    perc::define_ldl_checks [ list "NETS" ]
+
+  } ;# init
+
+  proc export {} {
+
+    set netType [ list !Power && !Ground ]
+
+    if { ! [ tvf::svrf_var ENABLE_PORTS ] } {
+
+      lappend netType "&&"
+      lappend netType "!TopPorts"
+
+    } ;# if
+
+    if { [ tvf::svrf_var ENABLE_TOP_ONLY ] } {
+
+      perc::check_net -netType $netType \
+                      -cellName [ list lvsTop ] \
+                      -condition export_cond \
+                      -comment "Export top level nets"
+
+    } \
+    else {
+
+      perc::check_net -netType $netType \
+                      -condition export_cond \
+                      -comment "Export nets"
+
+    } ;# else
+
+  } ;# proc export
+
+  proc export_cond { net } {
+
+    set net_name [ perc::name $net ]
+
+    if { [ debug ] } {
+
+      puts "\[DEBUG\] Net: $net_name"
+
+    } ;# if
+
+    set points [ list ]
+
+    set connected_dev [ perc::count -net $net -list ]
+
+    foreach dev [ lindex $connected_dev 1 ] {
+
+      set dev_name [ perc::name $dev ]
+
+      set x [ perc::x_coord $dev ]
+      set y [ perc::y_coord $dev ]
+
+      lappend points [ list $x $y ]
+
+      if { [ debug ] } {
+
+        puts "\[DEBUG\]   Dev: $dev_name"
+
+      } ;# if
+
+    } ;# foreach
+
+    perc::export_net $net -check_type "NETS" -annotate [ list [ list NET_NAME $net_name ] \
+                                                       ]
+
+    return 1
+
+  } ;# proc export_cond
+
+  proc debug {} {
+
+    if { [ info exists ::env(PERC_DEBUG) ] } {
+
+      return 1
+
+    } \
+    else {
+
+      return 0
+
+    } ;# else
+
+  } ;# proc debug
+
+*/]
+
+TVF FUNCTION ldl [/*
+
+  package require CalibrePERC_LDL
+
+  proc init {} {
+
+    source "../user_setup"
+    puts "\[INFO\] bottom: $check_layer_bottom"
+    puts "\[INFO\] top: $check_layer_top"
+
+    ldl::export_perc
+    ldl::execute_perc
+
+    ldl::import_perc -check_type "NETS" -nets ::nets
+
+    ldl::select_nets -output_layer NETS -gen_markers_only -nets ::nets -prop [ list [ list NET_NAME LDL_DEFAULT_PROC -type string ] \
+                                                                             ]
+
+    set svrf_variable ""
+
+    set svrf_main ""
+
+    for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+      set resistance ""
+
+      if { $i == 0 } {
+        set resistance "MT2_resistance"
+      } \
+      else {
+        set resistance "M${i}_resistance"
+      } ;# else
+
+      append svrf_main "m${i}_nobreak = STAMP ( M${i}net OR $resistance ) BY M${i}net\n"
+      
+
+    } ;# for
+
+    for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+      if { $i == 0 && $exist_m0u_layer == 1 } {
+        append svrf_main "m0u_with_net_name = DFM PROPERTY M0Unet NETS NODAL MULTI \[ NET_NAME = SPROPERTY( NETS, \"NET_NAME\", 1 ) \]\n"
+      }
+
+      append svrf_main "m${i}_with_net_name = DFM PROPERTY m${i}_nobreak NETS NODAL MULTI \[ NET_NAME = SPROPERTY( NETS, \"NET_NAME\", 1 ) \]\n"
+      
+    } ;# for
+
+    set length_constraints [ lsort -decreasing -integer $length_constraints ]
+
+    for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+      set lower_layer [ expr ${i} - 1 ]
+
+      foreach length_constraint $length_constraints {
+
+        set edge "m${i}_edge_${length_constraint}"
+        set current_metal_to_current_via_cnclosure "m${i}_v${i}_enclosure_${length_constraint}"
+        set current_metal_to_lower_via_enclosure "m${i}_v${lower_layer}_enclosure_${length_constraint}"
+
+        append svrf_main "${edge} = CONVEX EDGE m${i}_nobreak ANGLE1 == 90 LENGTH1 >= ${length_constraint} ANGLE2 == 90 LENGTH2 >= ${length_constraint}\n"
+
+        if { $i == 0 } {
+
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = ENC CTnet_M${i} m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = SIZE CTnet_M${i} BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+
+          if { $exist_m0u_layer == 1 } {
+            append svrf_main "m0_pcu_enclosure_${length_constraint} = DFM SPACE PCU_M0net \[m0_edge_${length_constraint}\] <= ${length_constraint} BY ENC CONNECTED\n"
+            append svrf_main "${current_metal_to_current_via_cnclosure} = DFM SPACE CTnet_M${i} \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+            append svrf_main "m0u_edge_${length_constraint} = CONVEX EDGE M0Unet ANGLE1 == 90 LENGTH1 >= ${length_constraint} ANGLE2 == 90 LENGTH2 >= ${length_constraint}\n"
+            append svrf_main "m0u_pcu_enclosure_${length_constraint} = DFM SPACE PCU_M0net \[m0u_edge_${length_constraint}\] <= ${length_constraint} BY ENC CONNECTED\n"
+            append svrf_main "m0u_ctu_enclosure_${length_constraint} = DFM SPACE CTUnet \[m0u_edge_${length_constraint}\] <= ${length_constraint} BY ENC CONNECTED\n"
+          } else {
+          append svrf_main "${current_metal_to_current_via_cnclosure} = DFM SPACE CTnet_M${i} \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+          }
+        } \
+        elseif { $i == 1 } {
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = ENC CTnet_M${lower_layer} m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = ENC V${i}net m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = SIZE CTnet_M${lower_layer} BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = SIZE V${i}net BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+
+          if { $exist_m0u_layer == 1 } {
+            append svrf_main "m1_m0u_enclosure_${length_constraint} = DFM SPACE CTUnet \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+          }
+
+          append svrf_main "${current_metal_to_lower_via_enclosure} = DFM SPACE CTnet_M${lower_layer} \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+          append svrf_main "${current_metal_to_current_via_cnclosure} = DFM SPACE V${i}net \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+
+        } \
+        elseif { $i == 4 || 5 } {
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = ENC V${lower_layer}net m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = SIZE V${lower_layer}net BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+
+          append svrf_main "${current_metal_to_lower_via_enclosure} = DFM SPACE V${lower_layer}net \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+
+        } \
+        else {
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = ENC V${lower_layer}net m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = ENC V${i}net m${i}_nobreak <= ${length_constraint} CONNECTED REGION OPPOSITE\n"
+
+          #append svrf_main "${current_metal_to_lower_via_enclosure} = SIZE V${lower_layer}net BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+          #append svrf_main "${current_metal_to_current_via_cnclosure} = SIZE V${i}net BY ${length_constraint} INSIDE OF m${i}_nobreak STEP 0.2\n"
+
+          append svrf_main "${current_metal_to_lower_via_enclosure} = DFM SPACE V${lower_layer}net \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+          append svrf_main "${current_metal_to_current_via_cnclosure} = DFM SPACE V${i}net \[${edge}\] <= ${length_constraint} BY ENC CONNECTED\n"
+
+        } ;# else
+
+        set dangling_edge "m${i}_dangling_edge_${length_constraint}"
+
+        if { $i == 0 } {
+          
+          if { $exist_m0u_layer ==1 } {
+
+            append svrf_main "${dangling_edge} = ( NOT TOUCH EDGE ${edge} ${current_metal_to_current_via_cnclosure} ) NOT TOUCH EDGE m0_pcu_enclosure_${length_constraint}\n"
+            append svrf_main "m0u_dangling_edge_${length_constraint} = ( m0u_edge_${length_constraint} NOT TOUCH EDGE m0u_pcu_enclosure_${length_constraint}) NOT TOUCH EDGE m0u_ctu_enclosure_${length_constraint}\n"
+
+          } else {
+
+            append svrf_main "${dangling_edge} = NOT TOUCH EDGE ${edge} ${current_metal_to_current_via_cnclosure}\n"
+          }
+        } \
+        elseif { $i == 1 } {
+
+          if { $exist_m0u_layer == 1 } {
+
+            append svrf_main "${dangling_edge} = (( ${edge} NOT TOUCH EDGE ${current_metal_to_current_via_cnclosure} ) NOT TOUCH EDGE ${current_metal_to_lower_via_enclosure}) NOT TOUCH EDGE m1_m0u_enclosure_${length_constraint}\n"
+
+          } else {
+
+            append svrf_main "${dangling_edge} = ( ${edge} NOT TOUCH EDGE ${current_metal_to_current_via_cnclosure} ) NOT TOUCH EDGE ${current_metal_to_lower_via_enclosure}\n"
+
+          }
+        } \
+        elseif { $i == 4 || 5 } {
+
+          append svrf_main "${dangling_edge} = NOT TOUCH EDGE ${edge} ${current_metal_to_lower_via_enclosure}\n"
+
+        } \
+        else {
+
+          append svrf_main "${dangling_edge} = ( ${edge} NOT TOUCH EDGE ${current_metal_to_current_via_cnclosure} ) NOT TOUCH EDGE ${current_metal_to_lower_via_enclosure}\n"
+
+        } ;# else
+
+      } ;# foreach
+
+    } ;# for
+
+    for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+      set open_layer ""
+
+      if { $i == 0 } {
+
+        set open_layer "MT2_open"
+
+      } \
+      else {
+
+        set open_layer "M${i}_open"
+
+      } ;# else
+
+      foreach length_constraint $length_constraints {
+        
+        if {$i == 0 && $exist_m0u_layer == 1} {
+          append svrf_main "m0u_dangling_${length_constraint} = ( EXPAND EDGE m0u_dangling_edge_${length_constraint} INSIDE BY ${length_constraint} ) INSIDE M0Unet\n"
+        }
+        append svrf_main "m${i}_dangling_${length_constraint} = ( EXPAND EDGE m${i}_dangling_edge_${length_constraint} INSIDE BY ${length_constraint} ) INSIDE m${i}_nobreak\n"
+
+      } ;# foreach
+
+      set size [ llength $length_constraints ]
+
+      for { set j 1 } { $j < $size } { incr j 1 } {
+
+        set length_constraint "[ lindex ${length_constraints} ${j} ]"
+
+        append svrf_main "m${i}_dangling_filter_${length_constraint} ="
+
+        for { set k [ expr $j - 1 ] } { $k > 0 } { incr k -1 } {
+        
+          append svrf_main " ("
+
+        } ;# for
+
+        append svrf_main " m${i}_dangling_${length_constraint}"
+
+        for { set k [ expr $j - 1 ] } { $k >= 0 } { incr k -1 } {
+            
+          append svrf_main " NOT INTERACT m${i}_dangling_[ lindex ${length_constraints} ${k} ]"
+
+          if { $k > 0 } {
+
+            append svrf_main " )"
+          
+          } ;# if 
+ 
+        } ;# for
+
+        append svrf_main "\n" 
+
+      } ;# for
+    
+      if {$i == 0 && $exist_m0u_layer == 1} {
+        #set size2 [ llength $length_constraints ]
+        for {set j 1} {$j < $size} {incr j 1} {
+          set length_constraint "[lindex ${length_constraints} ${j}]"
+          append svrf_main "m0u_dangling_filter_${length_constraint} ="
+          for {set k [ expr $j - 1 ]} {$k > 0} {incr k -1} {
+            append svrf_main " ("
+          } ;# for
+          append svrf_main " m0u_dangling_${length_constraint}"
+          for {set k [ expr $j - 1 ]} {$k >= 0} {incr k -1} {
+            append svrf_main " NOT INTERACT m0u_dangling_[ lindex ${length_constraints} ${k} ]"
+            if {$k > 0} {
+              append svrf_main " )"
+            } ;# if
+          } ;# for
+        append svrf_main "\n"
+        } ;# for
+      } ;# if        
+
+      for { set j 0 } { $j < $size } { incr j } {
+
+        set length_constraint "[ lindex ${length_constraints} ${j} ]"
+        set error "m${i}_dangling_error_${length_constraint}"
+
+        if { $j != 0 } {
+
+          set dangling_metal "m${i}_dangling_filter_[ lindex $length_constraints $j ]"
+          set dangling_m0u "m0u_dangling_filter_[ lindex $length_constraints $j ]"
+
+        } \
+        else {
+
+          set dangling_metal "m${i}_dangling_[ lindex $length_constraints $j ]"
+          set dangling_m0u "m0u_dangling_[ lindex $length_constraints $j ]"
+
+        } ;# else
+        
+        append svrf_main "${error} = DFM PROPERTY ( ${dangling_metal} NOT INTERACT $open_layer ) m${i}_with_net_name OVERLAP \[ NET_NAME = SPROPERTY( m${i}_with_net_name, \"NET_NAME\", 1 ) \]\n"
+        append svrf_main "                                                        \[ LENGTH = \"${length_constraint}\" \]\n"
+        append svrf_main "                                                        \[ LAYER = \"M${i}\" \]\n"
+        
+        if {$i == 0 && $exist_m0u_layer == 1} {
+          append svrf_main "m0u_dangling_error_${length_constraint} = DFM PROPERTY $dangling_m0u m0u_with_net_name OVERLAP \[ NET_NAME = SPROPERTY( m0u_with_net_name, \"NET_NAME\", 1 ) \]\n"
+          append svrf_main "                                                        \[ LENGTH = \"${length_constraint}\" \]\n"
+          append svrf_main "                                                        \[ LAYER = \"M0U\" \]\n"
+        } ;# if
+
+      } ;# for
+
+    } ;# for
+
+    set svrf ""
+    append svrf [ subst $svrf_variable ]
+    append svrf $svrf_main
+
+    ldl::svrf -svrf $svrf
+
+    set error_layers [ list ]
+
+    for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+      foreach length_constraint $length_constraints {
+
+        lappend error_layers "m${i}_dangling_error_${length_constraint}"
+
+      } ;# foreach
+
+    } ;# for
+
+    set write [ open "drc.svrf" "w" ]
+    puts $write $svrf
+    close $write
+
+    #set error_layers [ list m2_dangling_candidates_199 ]
+    #set error_layers [ list m2_v1_enclosure_199 ]
+    #set error_layers [ list m2_dangling_edge_199 ]
+
+    #foreach length_constraint $length_constraints {
+
+    #  for { set i $check_layer_bottom } { $i <= $check_layer_top } { incr i } {
+
+    #    dfm::write_rdb -layer "m${i}_dangling_error_${length_constraint}" \
+    #                   -checkname "LE.NET.002.m${i}_${length_constraint}" \
+    #                   -file "drc.rdb" \
+    #                   -nopseudo \
+    #                   -comment "Dangling net length >= ${length_constraint}(user define value)." \
+    #                   -append
+
+    #  } ;# for
+
+    #} ;# foreach
+
+    ldl::save -layers $error_layers \
+              -checkname "LE.NET.002" \
+              -file "drc.rdb" \
+              -format rdb \
+              -nopseudo \
+              -comment "Dangling net length >= constraint (user define value)."
+
+    ldl::summary_report "perc_ldl.rep" \
+                        -report_pass_fail
+
+    dfm::run_compare
+    #dfm::write_ixf ixf
+    dfm::write_nxf nxf
+    dfm::write_cmp_report lvs.rep
+
+    exit -force
+
+  } ;# proc init
+
+*/]
+
+DFM YS AUTOSTART ldl init
+
+DFM DATABASE "dfmdb" OVERWRITE REVISIONS [ALL PINLOC]
+
